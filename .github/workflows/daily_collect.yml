@@ -1,0 +1,46 @@
+name: Daily EV Charger Data Collect
+
+on:
+  schedule:
+    # 매일 한국 시간 오전 10시 실행
+    # Github은 UTC(협정 세계시) 기준이므로 한국(KST, UTC+9)보다 9시간 뺍니다.
+    # 10시 - 9시간 = 01시 (새벽 1시)
+    - cron: '0 1 * * *'
+  
+  # 수동으로도 실행할 수 있게 버튼 추가
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 저장소 코드 체크아웃
+      uses: actions/checkout@v3
+
+    - name: 파이썬 설정 (3.9 버전)
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: 라이브러리 설치
+      run: |
+        pip install -r requirements.txt
+
+    - name: 데이터 수집 스크립트 실행
+      env:
+        DATA_API_KEY: ${{ secrets.DATA_API_KEY }}
+      run: |
+        python main.py
+
+    - name: 결과 파일 커밋 및 푸시
+      run: |
+        git config --global user.name "github-actions-bot"
+        git config --global user.email "github-actions-bot@users.noreply.github.com"
+        git add *.xlsx
+        # 변동 사항이 있을 때만 커밋 (에러 방지)
+        git commit -m "Auto-update: EV Charger Data ($(date +'%Y-%m-%d'))" || echo "No changes to commit"
+        git push
