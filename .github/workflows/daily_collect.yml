@@ -1,20 +1,18 @@
-name: Daily EV Charger Data Collect
+name: Daily EV Charger Alert System
 
 on:
   schedule:
-    # 매일 한국 시간 오전 10시 실행
-    # Github은 UTC(협정 세계시) 기준이므로 한국(KST, UTC+9)보다 9시간 뺍니다.
-    # 10시 - 9시간 = 01시 (새벽 1시)
+    # 매일 한국 시간 오전 10시 (UTC 01:00)
     - cron: '0 1 * * *'
   
-  # 수동으로도 실행할 수 있게 버튼 추가
+  # 수동 실행 버튼 (테스트용)
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  run-alert:
     runs-on: ubuntu-latest
 
     steps:
@@ -28,19 +26,25 @@ jobs:
 
     - name: 라이브러리 설치
       run: |
-        pip install -r requirements.txt
+        pip install requests pandas openpyxl
 
-    - name: 데이터 수집 스크립트 실행
+    - name: 알럿 및 데이터 수집 스크립트 실행
       env:
+        # [중요] 설정한 Secret들을 환경변수로 넣어줘야 파이썬이 읽을 수 있습니다.
         DATA_API_KEY: ${{ secrets.DATA_API_KEY }}
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
       run: |
-        python main.py
+        # [수정] main.py가 아니라 우리가 만든 alert_main.py를 실행해야 합니다.
+        python alert_main.py
 
     - name: 결과 파일 커밋 및 푸시
       run: |
         git config --global user.name "github-actions-bot"
         git config --global user.email "github-actions-bot@users.noreply.github.com"
-        git add *.xlsx
+        
+        # 엑셀파일(*.xlsx)과 이력파일(*.csv) 모두 감지해서 올립니다.
+        git add *.xlsx *.csv
+        
         # 변동 사항이 있을 때만 커밋 (에러 방지)
-        git commit -m "Auto-update: EV Charger Data ($(date +'%Y-%m-%d'))" || echo "No changes to commit"
+        git commit -m "Auto-update: Charger Data & Alerts ($(date +'%Y-%m-%d'))" || echo "No changes to commit"
         git push
