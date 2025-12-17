@@ -2,10 +2,7 @@ name: Daily EV Charger Alert System
 
 on:
   schedule:
-    # 매일 한국 시간 오전 10시 (UTC 01:00)
     - cron: '0 1 * * *'
-  
-  # 수동 실행 버튼 (테스트용)
   workflow_dispatch:
 
 permissions:
@@ -19,7 +16,7 @@ jobs:
     - name: 저장소 코드 체크아웃
       uses: actions/checkout@v3
 
-    - name: 파이썬 설정 (3.9 버전)
+    - name: 파이썬 설정
       uses: actions/setup-python@v4
       with:
         python-version: '3.9'
@@ -28,13 +25,11 @@ jobs:
       run: |
         pip install requests pandas openpyxl
 
-    - name: 알럿 및 데이터 수집 스크립트 실행
+    - name: 알럿 스크립트 실행
       env:
-        # [중요] 설정한 Secret들을 환경변수로 넣어줘야 파이썬이 읽을 수 있습니다.
         DATA_API_KEY: ${{ secrets.DATA_API_KEY }}
         SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
       run: |
-        # [수정] main.py가 아니라 우리가 만든 alert_main.py를 실행해야 합니다.
         python alert_main.py
 
     - name: 결과 파일 커밋 및 푸시
@@ -42,9 +37,15 @@ jobs:
         git config --global user.name "github-actions-bot"
         git config --global user.email "github-actions-bot@users.noreply.github.com"
         
-        # 엑셀파일(*.xlsx)과 이력파일(*.csv) 모두 감지해서 올립니다.
-        git add *.xlsx *.csv
+        # [수정됨] 엑셀, CSV 뿐만 아니라 압축파일(*.gz)도 추가합니다.
+        # 이전의 큰 csv 파일은 삭제 목록에 추가합니다.
+        git add *.xlsx *.csv *.gz
         
-        # 변동 사항이 있을 때만 커밋 (에러 방지)
-        git commit -m "Auto-update: Charger Data & Alerts ($(date +'%Y-%m-%d'))" || echo "No changes to commit"
+        # 만약 이전의 큰 csv가 남아있다면 제거 (에러 방지용 안전장치)
+        if [ -f latest_data.csv ]; then
+          git rm --cached latest_data.csv || true
+          rm latest_data.csv || true
+        fi
+        
+        git commit -m "Auto-update: Compressed Data & Alerts ($(date +'%Y-%m-%d'))" || echo "No changes to commit"
         git push
