@@ -7,33 +7,25 @@ from datetime import datetime
 from math import radians, cos, sin, asin, sqrt
 
 # ==========================================
-# [보안 설정] 인증키 및 슬랙 URL (환경변수 사용)
+# [설정] 인증키, 슬랙 URL
 # ==========================================
-# 주의: Github Secrets에 등록된 값을 불러옵니다.
-# 코드 자체에는 절대 실제 키나 URL을 적지 마세요.
-
-# 1. 공공데이터포털 인증키
 service_key = os.environ.get("DATA_API_KEY")
-
-# 2. 슬랙 웹훅 URL
 slack_webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
-
-# API 기본 주소
 base_url = f"http://apis.data.go.kr/B552584/EvCharger/getChargerInfo?serviceKey={service_key}"
 
-# 파일 경로 설정
-skel_file_path = "skel_chargers.csv"       # (읽기 전용) SKEL 기준 정보
-history_file_path = "competitor_alerts.csv" # (쓰기/누적) 경쟁사 진입 이력
-prev_data_path = "latest_data.csv"         # (비교용) 어제 데이터
+# 파일 경로 설정 (압축 파일 사용)
+skel_file_path = "skel_chargers.csv"
+history_file_path = "competitor_alerts.csv"
+prev_data_path_gz = "latest_data.csv.gz"  # [변경] 압축 파일명
+prev_data_path_csv = "latest_data.csv"     # [참고] 구버전 파일명 (호환용)
 
-# 수집할 지역 코드 리스트 (전국)
 zcodes = [
     '11', '26', '27', '28', '29', '30', '31', '36', 
     '41', '43', '44', '46', '47', '48', '50', '51', '52'
 ]
 
 # ==========================================
-# [매핑 데이터]
+# [매핑 및 함수]
 # ==========================================
 REGION_MAP = {
     '11': '서울특별시', '26': '부산광역시', '27': '대구광역시', '28': '인천광역시',
@@ -94,14 +86,10 @@ BUSI_MAP = {
     'ZP': '자몽파워'
 }
 
-# Override
 BUSI_MAP['LU'] = 'LG유플러스'
 BUSI_MAP['ME'] = '환경부'
 BUSI_MAP['SG'] = '시그넷'
 
-# ==========================================
-# [함수 정의]
-# ==========================================
 def classify_region(code):
     code = str(code)
     if code in ['11', '28', '41']: return '수도권'
@@ -111,49 +99,42 @@ def classify_region(code):
 def classify_charger_newtype(row):
     c_type = str(row.get('chgerType', '')).strip()
     output = str(row.get('output', '')).strip()
-    
     slow_types = ['02', '07', '08']
     fast_check_types = ['01', '03', '04', '05', '06', '09', '10']
-    
     if c_type in slow_types: return "완속"
     elif (c_type in fast_check_types) and (output == "30"): return "완속"
     else: return "급속"
 
 def calculate_distance(lat1, lon1, lat2, lon2):
-    """Haversine Formula"""
-    R = 6371 
+    R = 6371
     try:
         dlat = radians(lat2 - lat1)
         dlon = radians(lon2 - lon1)
         a = sin(dlat / 2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2)**2
         c = 2 * asin(sqrt(a))
         return R * c
-    except:
-        return 9999
+    except: return 9999
 
 def send_slack_alert(message):
     if not slack_webhook_url:
-        print("⚠️ 슬랙 웹훅 URL이 설정되지 않았습니다. (콘솔 출력으로 대체)")
+        print("⚠️ 슬랙 웹훅 URL 없음")
         print(message)
         return
-    try:
-        payload = {"text": message}
-        requests.post(slack_webhook_url, json=payload)
-    except Exception as e:
-        print(f"슬랙 전송 실패: {e}")
+    try: requests.post(slack_webhook_url, json={"text": message})
+    except: pass
 
 # ==========================================
 # 0. 필수 설정 확인
 # ==========================================
 if not service_key:
-    print("❌ API 인증키(DATA_API_KEY)가 없습니다. Github Secrets 설정을 확인하세요.")
+    print("❌ API 인증키 없음. 종료.")
     exit()
 
 # ==========================================
 # 1. 오늘 데이터 수집 (API)
 # ==========================================
 all_data = []
-print(f"📡 데이터 수집을 시작합니다.") # Key 노출 방지를 위해 로그에서 Key 제외
+print("📡 데이터 수집 시작")
 
 for zcode in zcodes:
     page_no = 1
@@ -164,28 +145,23 @@ for zcode in zcodes:
             if response.status_code == 200:
                 try:
                     data = response.json()
-                    if 'items' in data and 'item' in data['items']:
-                        items = data['items']['item']
-                        if isinstance(items, dict): items = [items]
-                        all_data.extend(items)
-                        print(f"지역 {zcode} - {page_no}페이지: {len(items)}건 완료")
-                        if len(items) < 9999: break
-                        page_no += 1
-                    else: break
+                    items = data.get('items', {}).get('item', [])
+                    if isinstance(items, dict): items = [items]
+                    if not items: break
+                    all_data.extend(items)
+                    print(f"지역 {zcode} - {page_no}페이지: {len(items)}건")
+                    if len(items) < 9999: break
+                    page_no += 1
                 except: break
             else: break
         except: break
         time.sleep(0.5)
 
-# ==========================================
-# 2. 데이터 가공 및 파일 저장
-# ==========================================
 if not all_data:
-    print("❌ 수집된 데이터가 없어 종료합니다.")
+    print("❌ 수집 실패")
     exit()
 
 df = pd.DataFrame(all_data)
-
 # 가공
 df['권역'] = df['zcode'].apply(classify_region)
 df['지역명'] = df['zcode'].map(REGION_MAP).fillna(df['zcode'])
@@ -194,131 +170,101 @@ df['newtype'] = df.apply(classify_charger_newtype, axis=1)
 df['lat'] = pd.to_numeric(df['lat'], errors='coerce')
 df['lng'] = pd.to_numeric(df['lng'], errors='coerce')
 
-# 컬럼 순서
+# 컬럼 정리
 cols = df.columns.tolist()
-front_cols = ['권역', '지역명', '운영기관(가공)', 'newtype', 'statNm', 'addr', 'chgerType', 'output']
-final_cols = [c for c in front_cols if c in cols] + [c for c in cols if c not in front_cols]
-df = df[final_cols]
+front = ['권역', '지역명', '운영기관(가공)', 'newtype', 'statNm', 'addr', 'chgerType', 'output']
+final = [c for c in front if c in cols] + [c for c in cols if c not in front]
+df = df[final]
 
-# [중요] 오늘 날짜 파일로 저장
+# 오늘 데이터 엑셀 저장 (이건 그대로 둠, 엑셀은 압축 안 함 - 보통 20~30MB 수준)
 today_str = datetime.now().strftime("%Y%m%d")
-daily_file_name = f"전기차충전소_{today_str}.xlsx"
-df.to_excel(daily_file_name, index=False)
-print(f"✅ 오늘 전체 데이터 저장 완료: {daily_file_name}")
+df.to_excel(f"전기차충전소_{today_str}.xlsx", index=False)
 
 # ==========================================
-# 3. 신규 감지 및 SKEL 반경 확인
+# 2. 신규 감지 (호환성 로직 추가)
 # ==========================================
 new_chargers_df = pd.DataFrame()
+prev_df = pd.DataFrame()
 
-if os.path.exists(prev_data_path):
-    print("\n📂 어제 데이터와 비교 시작...")
-    try:
-        prev_df = pd.read_csv(prev_data_path)
-        prev_ids = set(prev_df['statId'].astype(str))
-        curr_ids = set(df['statId'].astype(str))
-        new_stat_ids = curr_ids - prev_ids
-        
-        if new_stat_ids:
-            print(f"✨ 신규 충전소 {len(new_stat_ids)}개소 발견!")
-            new_chargers_df = df[df['statId'].astype(str).isin(new_stat_ids)]
-        else:
-            print("✅ 신규 충전소 없음.")
-    except Exception as e:
-        print(f"비교 오류: {e}")
+# 압축 파일(.csv.gz)이 있으면 우선 읽고, 없으면 일반(.csv) 파일 확인
+if os.path.exists(prev_data_path_gz):
+    print("📂 (압축) 어제 데이터 로드 중...")
+    prev_df = pd.read_csv(prev_data_path_gz, compression='gzip')
+elif os.path.exists(prev_data_path_csv):
+    print("📂 (일반) 어제 데이터 로드 중...")
+    prev_df = pd.read_csv(prev_data_path_csv)
+
+if not prev_df.empty:
+    prev_ids = set(prev_df['statId'].astype(str))
+    curr_ids = set(df['statId'].astype(str))
+    new_ids = curr_ids - prev_ids
+    
+    if new_ids:
+        print(f"✨ 신규 {len(new_ids)}개 발견!")
+        new_chargers_df = df[df['statId'].astype(str).isin(new_ids)]
+    else:
+        print("✅ 신규 없음")
 else:
-    print("\n⚠️ 어제 데이터 없음 (최초 실행). 비교 건너뜀.")
+    print("⚠️ 어제 데이터 없음. 비교 건너뜀.")
 
 # ==========================================
-# 4. 거리 계산, 이력 저장, 슬랙 알림
+# 3. 거리 계산 & 알림
 # ==========================================
-alert_list = []      # 슬랙 알림용 리스트
-history_records = [] # 파일 저장용 리스트
+alert_list, history_records = [], []
 today_dash = datetime.now().strftime("%Y-%m-%d")
 
-if not new_chargers_df.empty:
-    if os.path.exists(skel_file_path):
-        try:
-            skel_df = pd.read_csv(skel_file_path)
-            
-            # 신규 충전소 중 '급속'만 필터링
-            target_chargers = new_chargers_df[new_chargers_df['newtype'] == '급속']
-            
-            if not target_chargers.empty:
-                print(f"🚀 신규 급속 {len(target_chargers)}건 거리 분석 시작...")
-                for _, new_chg in target_chargers.iterrows():
-                    n_lat, n_lng = new_chg['lat'], new_chg['lng']
-                    if pd.isna(n_lat) or pd.isna(n_lng): continue
-                    
-                    for _, skel in skel_df.iterrows():
-                        # SKEL 파일에 lat, lng 컬럼 필수
-                        s_lat, s_lng = skel['lat'], skel['lng']
-                        dist = calculate_distance(s_lat, s_lng, n_lat, n_lng)
-                        
-                        if dist <= 1.0: # 1km 이내
-                            # [1] 슬랙 알림용 정보
-                            alert_info = {
-                                "skel_name": skel['statNm'],
-                                "dist": f"{dist:.3f}km",
-                                "comp_name": new_chg['statNm'],
-                                "comp_busi": new_chg['운영기관(가공)'],
-                                "output": new_chg.get('output', 'N/A'),
-                                "addr": new_chg.get('addr', '')
-                            }
-                            alert_list.append(alert_info)
-
-                            # [2] 이력 파일(History) 저장용 정보
-                            record = {
-                                "감지일자": today_dash,
-                                "SKEL_ID": skel.get('statId', 'Unknown'),
-                                "SKEL_지점명": skel.get('statNm', 'Unknown'),
-                                "거리(km)": round(dist, 3),
-                                "경쟁사_ID": new_chg['statId'],
-                                "경쟁사_지점명": new_chg['statNm'],
-                                "운영사": new_chg['운영기관(가공)'],
-                                "용량": new_chg.get('output', ''),
-                                "경쟁사_주소": new_chg.get('addr', '')
-                            }
-                            history_records.append(record)
-
-            else:
-                print("신규 중 '급속' 없음.")
-        except Exception as e:
-            print(f"❌ SKEL 파일 처리 오류: {e}")
-    else:
-        print(f"⚠️ '{skel_file_path}' 파일이 없습니다. (파일명이 정확한지 확인하세요)")
-
-# ==========================================
-# 5. 결과 처리 (슬랙 전송 및 파일 저장)
-# ==========================================
-
-# [1] 이력 파일 저장 (competitor_alerts.csv)
-if history_records:
-    new_history_df = pd.DataFrame(history_records)
+if not new_chargers_df.empty and os.path.exists(skel_file_path):
+    skel_df = pd.read_csv(skel_file_path)
+    targets = new_chargers_df[new_chargers_df['newtype'] == '급속']
     
-    # 기존 파일이 있으면 불러와서 이어붙이고, 없으면 새로 생성
-    if os.path.exists(history_file_path):
-        existing_df = pd.read_csv(history_file_path)
-        updated_history_df = pd.concat([existing_df, new_history_df], ignore_index=True)
-    else:
-        updated_history_df = new_history_df
+    for _, new_chg in targets.iterrows():
+        n_lat, n_lng = new_chg['lat'], new_chg['lng']
+        if pd.isna(n_lat) or pd.isna(n_lng): continue
         
-    updated_history_df.to_csv(history_file_path, index=False, encoding='utf-8-sig')
-    print(f"💾 이력 파일 '{history_file_path}'에 {len(history_records)}건을 추가했습니다.")
-else:
-    print("👍 SKEL 반경 1km 이내 경쟁사 진입 없음 (이력 저장 생략).")
+        for _, skel in skel_df.iterrows():
+            s_lat, s_lng = skel.get('lat'), skel.get('lng')
+            dist = calculate_distance(s_lat, s_lng, n_lat, n_lng)
+            
+            if dist <= 1.0:
+                alert_info = {
+                    "skel_name": skel['statNm'], "dist": f"{dist:.3f}km",
+                    "comp_name": new_chg['statNm'], "comp_busi": new_chg['운영기관(가공)'],
+                    "output": new_chg.get('output', ''), "addr": new_chg.get('addr', '')
+                }
+                alert_list.append(alert_info)
+                
+                history_records.append({
+                    "감지일자": today_dash,
+                    "SKEL_ID": skel.get('statId', 'Unknown'), "SKEL_지점명": skel.get('statNm', 'Unknown'),
+                    "거리(km)": round(dist, 3), "경쟁사_ID": new_chg['statId'],
+                    "경쟁사_지점명": new_chg['statNm'], "운영사": new_chg['운영기관(가공)'],
+                    "용량": new_chg.get('output', ''), "경쟁사_주소": new_chg.get('addr', '')
+                })
 
-# [2] 슬랙 전송
+# 이력 저장
+if history_records:
+    new_h = pd.DataFrame(history_records)
+    if os.path.exists(history_file_path):
+        old_h = pd.read_csv(history_file_path)
+        final_h = pd.concat([old_h, new_h], ignore_index=True)
+    else: final_h = new_h
+    final_h.to_csv(history_file_path, index=False, encoding='utf-8-sig')
+
+# 슬랙 전송
 if alert_list:
-    msg = f"🚨 *[경쟁사 진입 알림] SKEL 반경 1km 내 ({today_dash})*\n\n"
+    msg = f"🚨 *[경쟁사 진입] SKEL 반경 1km 내 ({today_dash})*\n\n"
     for item in alert_list:
-        msg += f"📍 *SKEL {item['skel_name']}* 인근 ({item['dist']})\n"
-        msg += f"   • {item['comp_name']} ({item['comp_busi']})\n"
-        msg += f"   • {item['output']}kW / {item['addr']}\n"
-        msg += "--------------------------------\n"
+        msg += f"📍 *{item['skel_name']}* 인근 ({item['dist']})\n • {item['comp_name']} ({item['comp_busi']})\n"
     send_slack_alert(msg)
-    print("🔔 슬랙 전송 완료.")
 
-# [3] 내일 비교를 위해 오늘 데이터를 최신 데이터 파일로 갱신
-df.to_csv(prev_data_path, index=False, encoding='utf-8-sig')
-print("💾 비교용 데이터 갱신 완료.")
+# ==========================================
+# [중요] 내일 비교를 위해 오늘 데이터를 '압축'해서 저장
+# ==========================================
+# compression='gzip' 옵션을 주면 .csv.gz 파일로 작게 만들어집니다.
+df.to_csv(prev_data_path_gz, index=False, compression='gzip', encoding='utf-8-sig')
+print(f"💾 비교용 데이터 압축 저장 완료: {prev_data_path_gz}")
+
+# 혹시 구버전 파일이 남아있다면 삭제 (용량 문제 방지)
+if os.path.exists(prev_data_path_csv):
+    try: os.remove(prev_data_path_csv)
+    except: pass
