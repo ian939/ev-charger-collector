@@ -16,8 +16,8 @@ base_url = f"http://apis.data.go.kr/B552584/EvCharger/getChargerInfo?serviceKey=
 # 파일 경로 설정 (압축 파일 사용)
 skel_file_path = "skel_chargers.csv"
 history_file_path = "competitor_alerts.csv"
-prev_data_path_gz = "latest_data.csv.gz"  # [변경] 압축 파일명
-prev_data_path_csv = "latest_data.csv"     # [참고] 구버전 파일명 (호환용)
+prev_data_path_gz = "latest_data.csv.gz"
+prev_data_path_csv = "latest_data.csv"
 
 zcodes = [
     '11', '26', '27', '28', '29', '30', '31', '36', 
@@ -123,6 +123,22 @@ def send_slack_alert(message):
     try: requests.post(slack_webhook_url, json={"text": message})
     except: pass
 
+def get_capacity_value(row):
+    """
+    [신규 로직] 용량 산출: output * method
+    method: '단독' -> 1, '동시' -> 0.5, 그 외(None 등) -> 1
+    output: 문자열을 숫자로 변환
+    """
+    try:
+        output_val = float(str(row.get('output', 0)).replace(',', '').strip())
+    except:
+        output_val = 0.0
+
+    method_str = str(row.get('method', '')).strip()
+    factor = 0.5 if '동시' in method_str else 1.0
+    
+    return output_val * factor
+
 # ==========================================
 # 0. 필수 설정 확인
 # ==========================================
@@ -169,6 +185,8 @@ df['운영기관(가공)'] = df['busiId'].map(BUSI_MAP).fillna(df['busiNm'])
 df['newtype'] = df.apply(classify_charger_newtype, axis=1)
 df['lat'] = pd.to_numeric(df['lat'], errors='coerce')
 df['lng'] = pd.to_numeric(df['lng'], errors='coerce')
+# [신규] 용량 계산을 위한 컬럼 추가
+df['calc_capacity'] = df.apply(get_capacity_value, axis=1)
 
 # 컬럼 정리
 cols = df.columns.tolist()
@@ -176,17 +194,16 @@ front = ['권역', '지역명', '운영기관(가공)', 'newtype', 'statNm', 'ad
 final = [c for c in front if c in cols] + [c for c in cols if c not in front]
 df = df[final]
 
-# 오늘 데이터 엑셀 저장 (이건 그대로 둠, 엑셀은 압축 안 함 - 보통 20~30MB 수준)
+# 오늘 데이터 엑셀 저장
 today_str = datetime.now().strftime("%Y%m%d")
 df.to_excel(f"전기차충전소_{today_str}.xlsx", index=False)
 
 # ==========================================
-# 2. 신규 감지 (호환성 로직 추가)
+# 2. 신규 감지 (호환성 로직)
 # ==========================================
 new_chargers_df = pd.DataFrame()
 prev_df = pd.DataFrame()
 
-# 압축 파일(.csv.gz)이 있으면 우선 읽고, 없으면 일반(.csv) 파일 확인
 if os.path.exists(prev_data_path_gz):
     print("📂 (압축) 어제 데이터 로드 중...")
     prev_df = pd.read_csv(prev_data_path_gz, compression='gzip')
@@ -208,38 +225,63 @@ else:
     print("⚠️ 어제 데이터 없음. 비교 건너뜀.")
 
 # ==========================================
-# 3. 거리 계산 & 알림
+# 3. 거리 계산 & 알림 & 이력 저장 (중복제거/용량합산 로직 적용)
 # ==========================================
-alert_list, history_records = [], []
+alert_list = []
+history_records = []
 today_dash = datetime.now().strftime("%Y-%m-%d")
 
 if not new_chargers_df.empty and os.path.exists(skel_file_path):
     skel_df = pd.read_csv(skel_file_path)
-    targets = new_chargers_df[new_chargers_df['newtype'] == '급속']
+    # 1. 신규 중 급속만 필터링
+    targets = new_chargers_df[new_chargers_df['newtype'] == '급속'].copy()
     
-    for _, new_chg in targets.iterrows():
-        n_lat, n_lng = new_chg['lat'], new_chg['lng']
-        if pd.isna(n_lat) or pd.isna(n_lng): continue
+    if not targets.empty:
+        # ------------------------------------------------------------------
+        # [신규 로직] 경쟁사 ID(statId) 기준으로 GroupBy하여 용량 합산 (1줄 만들기)
+        # ------------------------------------------------------------------
+        # 필요한 정보만 남겨서 집계
+        # - 용량: 합계(sum)
+        # - 나머지 정보: 첫번째 값(first) 사용 (지점명, 주소, 위경도 등은 동일하므로)
+        agg_rules = {
+            'calc_capacity': 'sum',      # 용량은 합산
+            'statNm': 'first',           # 지점명은 첫번째 값
+            '운영기관(가공)': 'first',    # 운영사도 첫번째 값
+            'addr': 'first',             # 주소도 첫번째 값
+            'lat': 'first',
+            'lng': 'first'
+        }
         
-        for _, skel in skel_df.iterrows():
-            s_lat, s_lng = skel.get('lat'), skel.get('lng')
-            dist = calculate_distance(s_lat, s_lng, n_lat, n_lng)
+        # statId 기준으로 그룹핑
+        grouped_targets = targets.groupby('statId', as_index=False).agg(agg_rules)
+        
+        # 그룹핑된 데이터(충전소 단위)로 거리 계산 반복
+        for _, new_stn in grouped_targets.iterrows():
+            n_lat, n_lng = new_stn['lat'], new_stn['lng']
+            if pd.isna(n_lat) or pd.isna(n_lng): continue
             
-            if dist <= 1.0:
-                alert_info = {
-                    "skel_name": skel['statNm'], "dist": f"{dist:.3f}km",
-                    "comp_name": new_chg['statNm'], "comp_busi": new_chg['운영기관(가공)'],
-                    "output": new_chg.get('output', ''), "addr": new_chg.get('addr', '')
-                }
-                alert_list.append(alert_info)
+            for _, skel in skel_df.iterrows():
+                s_lat, s_lng = skel.get('lat'), skel.get('lng')
+                dist = calculate_distance(s_lat, s_lng, n_lat, n_lng)
                 
-                history_records.append({
-                    "감지일자": today_dash,
-                    "SKEL_ID": skel.get('statId', 'Unknown'), "SKEL_지점명": skel.get('statNm', 'Unknown'),
-                    "거리(km)": round(dist, 3), "경쟁사_ID": new_chg['statId'],
-                    "경쟁사_지점명": new_chg['statNm'], "운영사": new_chg['운영기관(가공)'],
-                    "용량": new_chg.get('output', ''), "경쟁사_주소": new_chg.get('addr', '')
-                })
+                if dist <= 1.0:
+                    # 알림 및 이력 저장용 데이터 생성
+                    alert_info = {
+                        "skel_name": skel['statNm'], "dist": f"{dist:.3f}km",
+                        "comp_name": new_stn['statNm'], "comp_busi": new_stn['운영기관(가공)'],
+                        "output": new_stn['calc_capacity'], "addr": new_stn['addr']
+                    }
+                    alert_list.append(alert_info)
+                    
+                    history_records.append({
+                        "감지일자": today_dash,
+                        "SKEL_ID": skel.get('statId', 'Unknown'), "SKEL_지점명": skel.get('statNm', 'Unknown'),
+                        "거리(km)": round(dist, 3), 
+                        "경쟁사_ID": new_stn['statId'], # 그룹핑 기준이었던 statId
+                        "경쟁사_지점명": new_stn['statNm'], "운영사": new_stn['운영기관(가공)'],
+                        "총용량": new_stn['calc_capacity'], # 합산된 용량
+                        "경쟁사_주소": new_stn['addr']
+                    })
 
 # 이력 저장
 if history_records:
@@ -254,17 +296,15 @@ if history_records:
 if alert_list:
     msg = f"🚨 *[경쟁사 진입] SKEL 반경 1km 내 ({today_dash})*\n\n"
     for item in alert_list:
-        msg += f"📍 *{item['skel_name']}* 인근 ({item['dist']})\n • {item['comp_name']} ({item['comp_busi']})\n"
+        msg += f"📍 *{item['skel_name']}* 인근 ({item['dist']})\n • {item['comp_name']} ({item['comp_busi']}) / 총 {item['output']}kW\n"
     send_slack_alert(msg)
 
 # ==========================================
-# [중요] 내일 비교를 위해 오늘 데이터를 '압축'해서 저장
+# [중요] 내일 비교용 데이터 압축 저장
 # ==========================================
-# compression='gzip' 옵션을 주면 .csv.gz 파일로 작게 만들어집니다.
 df.to_csv(prev_data_path_gz, index=False, compression='gzip', encoding='utf-8-sig')
 print(f"💾 비교용 데이터 압축 저장 완료: {prev_data_path_gz}")
 
-# 혹시 구버전 파일이 남아있다면 삭제 (용량 문제 방지)
 if os.path.exists(prev_data_path_csv):
     try: os.remove(prev_data_path_csv)
     except: pass
