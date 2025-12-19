@@ -241,8 +241,6 @@ if not new_chargers_df.empty and os.path.exists(skel_file_path):
         # [신규 로직] 경쟁사 ID(statId) 기준으로 GroupBy하여 용량 합산 (1줄 만들기)
         # ------------------------------------------------------------------
         # 필요한 정보만 남겨서 집계
-        # - 용량: 합계(sum)
-        # - 나머지 정보: 첫번째 값(first) 사용 (지점명, 주소, 위경도 등은 동일하므로)
         agg_rules = {
             'calc_capacity': 'sum',      # 용량은 합산
             'statNm': 'first',           # 지점명은 첫번째 값
@@ -252,7 +250,7 @@ if not new_chargers_df.empty and os.path.exists(skel_file_path):
             'lng': 'first'
         }
         
-        # statId 기준으로 그룹핑
+        # statId 기준으로 그룹핑 -> 이러면 충전소가 1줄로 요약됨
         grouped_targets = targets.groupby('statId', as_index=False).agg(agg_rules)
         
         # 그룹핑된 데이터(충전소 단위)로 거리 계산 반복
