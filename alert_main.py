@@ -19,14 +19,14 @@ history_file_path = "competitor_alerts.csv"
 prev_data_path_gz = "latest_data.csv.gz"
 prev_data_path_csv = "latest_data.csv"
 
-# 전국 지역코드 [cite: 57, 58]
+# 전국 지역코드
 zcodes = [
     '11', '26', '27', '28', '29', '30', '31', '36', 
     '41', '43', '44', '46', '47', '48', '50', '51', '52'
 ]
 
 # ==========================================
-# [매핑 데이터] 가이드 문서 기반 코드 변환 [cite: 52, 58, 62, 64]
+# [매핑 데이터] 가이드 문서 기반 코드 변환
 # ==========================================
 REGION_MAP = {
     '11': '서울특별시', '26': '부산광역시', '27': '대구광역시', '28': '인천광역시',
@@ -38,13 +38,23 @@ REGION_MAP = {
 
 BUSI_MAP = {'ME': '환경부', 'LU': 'LG유플러스', 'SG': '시그넷', 'KP': '한국전력'} 
 
-# [추가] 3.6. kind (충전소 구분 코드) 매핑 [cite: 61, 62]
+# [추가 요청 사항] busiNm 변경 매핑 규칙
+BUSI_NAME_MAP = {
+    '기후에너지환경부': '환경부',
+    '차지비': 'GS차지비',
+    'LG유플러스 볼트업': 'LG유플러스',
+    'NICE인프라': '한국전자금융',
+    '한국전력공사': '한국전력',
+    'SK시그넷': '시그넷'
+}
+
+# [추가] 3.6. kind (충전소 구분 코드) 매핑
 KIND_MAP = {
     'A0': '공공시설', 'B0': '주차시설', 'C0': '휴게시설', 'D0': '관광시설', 'E0': '상업시설',
     'F0': '차량정비시설', 'G0': '기타시설', 'H0': '공동주택시설', 'I0': '근린생활시설', 'J0': '교육문화시설'
 }
 
-# [추가] 3.7. kindDetail (충전소 구분 상세 코드) 매핑 [cite: 63, 64]
+# [추가] 3.7. kindDetail (충전소 구분 상세 코드) 매핑
 KIND_DETAIL_MAP = {
     'A001': '관공서', 'A002': '주민센터', 'A003': '공공기관', 'A004': '지자체시설',
     'B001': '공영주차장', 'B002': '공원주차장', 'B003': '환승주차장', 'B004': '일반주차장',
@@ -154,6 +164,10 @@ df = pd.DataFrame(all_data)
 df['권역'] = df['zcode'].apply(classify_region)
 df['지역명'] = df['zcode'].map(REGION_MAP).fillna(df['zcode'])
 df['운영기관(가공)'] = df['busiId'].map(BUSI_MAP).fillna(df['busiNm'])
+
+# [요청 반영] NewbusiNm 생성 (busiNm 기준 매핑, 없으면 원본 유지)
+df['NewbusiNm'] = df['busiNm'].map(BUSI_NAME_MAP).fillna(df['busiNm'])
+
 df['newtype'] = df.apply(classify_charger_newtype, axis=1)
 
 # [요청 사항 반영] Kind 및 KindDetail 설명값 추가 
@@ -164,9 +178,9 @@ df['lat'] = pd.to_numeric(df['lat'], errors='coerce')
 df['lng'] = pd.to_numeric(df['lng'], errors='coerce')
 df['calc_capacity'] = df.apply(get_capacity_value, axis=1)
 
-# 컬럼 순서 재배치 (가공 컬럼을 앞쪽으로)
+# 컬럼 순서 재배치 (가공 컬럼을 앞쪽으로, NewbusiNm 포함)
 cols = df.columns.tolist()
-front = ['권역', '지역명', '운영기관(가공)', 'newtype', 'Kind(new)', 'KindDetail(new)', 'statNm', 'addr']
+front = ['권역', '지역명', '운영기관(가공)', 'NewbusiNm', 'newtype', 'Kind(new)', 'KindDetail(new)', 'statNm', 'addr']
 final = [c for c in front if c in cols] + [c for c in cols if c not in front]
 df = df[final]
 
@@ -197,6 +211,7 @@ if not new_chargers_df.empty and os.path.exists(skel_file_path):
     
     if not targets.empty:
         # 충전소 ID별 그룹화 (중복 제거 및 용량 합산)
+        # 운영기관 정보 등은 NewbusiNm 혹은 운영기관(가공)을 사용할 수 있으나 기존 로직 유지
         grouped_targets = targets.groupby('statId', as_index=False).agg({
             'calc_capacity': 'sum', 'statNm': 'first', '운영기관(가공)': 'first',
             'addr': 'first', 'lat': 'first', 'lng': 'first'
