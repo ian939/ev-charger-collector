@@ -166,7 +166,7 @@ df['지역명'] = df['zcode'].map(REGION_MAP).fillna(df['zcode'])
 df['운영기관(가공)'] = df['busiId'].map(BUSI_MAP).fillna(df['busiNm'])
 
 # [요청 반영] NewbusiNm 생성 (busiNm 기준 매핑, 없으면 원본 유지)
-df['NewbusiNm'] = df['busiNm'].map(BUSI_NAME_MAP).fillna(df['busiNm'])
+df['NewbusiNm'] = df['bnm'].map(BUSI_NAME_MAP).fillna(df['bnm'])
 
 df['newtype'] = df.apply(classify_charger_newtype, axis=1)
 
@@ -254,3 +254,4 @@ if alert_list:
 
 df.to_csv(prev_data_path_gz, index=False, compression='gzip', encoding='utf-8-sig')
 print("💾 분석 및 백업 완료")
+
