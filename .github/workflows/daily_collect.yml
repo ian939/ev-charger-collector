@@ -25,10 +25,9 @@ jobs:
       run: |
         pip install requests pandas openpyxl
 
-    - name: 알럿 스크립트 실행
+    - name: 수집 스크립트 실행 (불완전 수집 시 exit 1 → 커밋 단계 스킵)
       env:
         DATA_API_KEY: ${{ secrets.DATA_API_KEY }}
-        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
       run: |
         python alert_main.py
 
