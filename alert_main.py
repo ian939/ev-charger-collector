@@ -28,10 +28,13 @@ BACKOFF_SECONDS = [5, 10, 20]  # 재시도 전 대기 (지수 백오프)
 MAX_ROUNDS = 3              # 실패 지역 전체 재시도 라운드 수
 REQUEST_TIMEOUT = 60        # 요청 타임아웃(초)
 MIN_RATIO_VS_PREV = 0.95    # 완전성 게이트: 전일 대비 최소 수집 비율
+MIN_REGION_BASELINE = 1000  # 지역별 게이트: 전일 이 건수 이상이던 지역만 급감 검사 (이관 잔재 소지역 제외)
+MIN_REGION_RATIO = 0.5      # 지역별 게이트: 전일 대비 이 비율 미만이면 실패
 
-# 전국 지역코드
+# 전국 지역코드 — 2026-07-01 행정구역 개편: 광주(29)·전남(46) 폐지 → 전남광주통합특별시(12) 신설.
+# 29/46은 사업자 미이관 잔재 수집을 위해 당분간 유지 (빈 지역 조회는 무해).
 zcodes = [
-    '11', '26', '27', '28', '29', '30', '31', '36',
+    '11', '12', '26', '27', '28', '29', '30', '31', '36',
     '41', '43', '44', '46', '47', '48', '50', '51', '52'
 ]
 
@@ -39,7 +42,7 @@ zcodes = [
 # [매핑 데이터] 가이드 문서 기반 코드 변환
 # ==========================================
 REGION_MAP = {
-    '11': '서울특별시', '26': '부산광역시', '27': '대구광역시', '28': '인천광역시',
+    '11': '서울특별시', '12': '전남광주통합특별시', '26': '부산광역시', '27': '대구광역시', '28': '인천광역시',
     '29': '광주광역시', '30': '대전광역시', '31': '울산광역시', '36': '세종특별자치시',
     '41': '경기도', '43': '충청북도', '44': '충청남도', '46': '전라남도',
     '47': '경상북도', '48': '경상남도', '50': '제주특별자치도', '51': '강원특별자치도',
@@ -85,7 +88,7 @@ def classify_region(code):
     code = str(code)
     if code in ['11', '28', '41']: return '수도권'
     elif code in ['26', '27', '29', '30', '31']: return '5대광역시'
-    else: return '지방'
+    else: return '지방'  # '12'(전남광주통합특별시)는 지방 분류 — 옛 광주(29) 단독 시절만 5대광역시
 
 def classify_charger_newtype(row):
     c_type = str(row.get('chgerType', '')).strip()
@@ -205,6 +208,19 @@ def check_completeness(today_count, prev_count):
         return True
     return today_count >= prev_count * MIN_RATIO_VS_PREV
 
+def check_region_completeness(today_counts, prev_counts):
+    """지역(zcode)별 전일 대비 급감 검사. 문제 지역 설명 리스트 반환 (빈 리스트 = 통과).
+    총량 게이트(-5%)를 빠져나가는 '지역 단위 증발'을 잡는다 — 2026-07-01 전남광주 통합처럼
+    행정구역 개편으로 데이터가 새 zcode로 이관되면 기존 지역이 통째로 사라진다."""
+    problems = []
+    for z, prev_n in sorted(prev_counts.items()):
+        if prev_n < MIN_REGION_BASELINE:
+            continue
+        today_n = today_counts.get(z, 0)
+        if today_n < prev_n * MIN_REGION_RATIO:
+            problems.append(f"지역 {z}: 전일 {prev_n}건 → 오늘 {today_n}건")
+    return problems
+
 # ==========================================
 # 메인 흐름
 # ==========================================
@@ -257,6 +273,16 @@ def main():
     if not check_completeness(len(df), prev_count):
         print(f"❌ 수집 건수 급감: 오늘 {len(df)}건 < 전일 {prev_count}건의 {MIN_RATIO_VS_PREV:.0%} — 불완전 수집으로 판정, 저장/커밋 중단")
         sys.exit(1)
+
+    if prev_df is not None and 'zcode' in prev_df.columns:
+        today_counts = df['zcode'].astype(str).value_counts().to_dict()
+        prev_counts = prev_df['zcode'].astype(str).value_counts().to_dict()
+        problems = check_region_completeness(today_counts, prev_counts)
+        if problems:
+            print("❌ 지역별 수집 급감 감지 — 불완전 수집 또는 행정구역 개편(zcode 변경) 가능성, 저장/커밋 중단")
+            for p in problems:
+                print("   " + p)
+            sys.exit(1)
 
     # 오늘 데이터 저장
     today_str = datetime.now().strftime("%Y%m%d")
