@@ -2,7 +2,9 @@ name: Daily EV Charger Alert System
 
 on:
   schedule:
-    - cron: '0 1 * * *'
+    # 15:23 UTC = KST 00:23 (심야) — KST 10시대(01:00 UTC)는 API 피크라 재시도 폭증으로 2~4시간 소요,
+    # 심야는 ~20분에 완료. 저장 시점이 같은 UTC 날짜라 파일명은 직전 KST 하루의 마감 스냅샷이 됨.
+    - cron: '23 15 * * *'
   workflow_dispatch:
 
 permissions:
