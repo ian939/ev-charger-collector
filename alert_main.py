@@ -12,7 +12,8 @@ from datetime import datetime
 # [설정] 인증키
 # ==========================================
 service_key = os.environ.get("DATA_API_KEY")
-base_url = f"http://apis.data.go.kr/B552584/EvCharger/getChargerInfo?serviceKey={service_key}"
+# 2026-08-02경 API가 HTTP(80) 서비스 중단(무응답) → HTTPS 필수. http로 두면 전 요청 ConnectTimeout.
+base_url = f"https://apis.data.go.kr/B552584/EvCharger/getChargerInfo?serviceKey={service_key}"
 
 # 파일 경로
 skel_file_path = "skel_chargers.csv"
