@@ -9,8 +9,22 @@ import sys
 from datetime import datetime
 
 # ==========================================
-# [설정] 인증키
+# [설정] 인증키 — 환경변수 우선, 없으면 .env 파일에서 로드 (로컬 스케줄러 실행용)
 # ==========================================
+def _load_dotenv(path=os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')):
+    if not os.path.exists(path):
+        return
+    with open(path, encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            k, _, v = line.partition('=')
+            k, v = k.strip(), v.strip().strip('"').strip("'")
+            if k and v and k not in os.environ:
+                os.environ[k] = v
+
+_load_dotenv()
 service_key = os.environ.get("DATA_API_KEY")
 # 2026-08-02경 API가 HTTP(80) 서비스 중단(무응답) → HTTPS 필수. http로 두면 전 요청 ConnectTimeout.
 base_url = f"https://apis.data.go.kr/B552584/EvCharger/getChargerInfo?serviceKey={service_key}"
